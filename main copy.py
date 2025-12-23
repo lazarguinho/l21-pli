@@ -22,15 +22,19 @@ def _neighbors_at_distance_1(graph: nx.Graph):
     return {u: set(graph.neighbors(u)) for u in graph.nodes()}
 
 
-def _neighbors_at_distance_2(graph: nx.Graph, dist1):
-    dist2 = dict()
-    for v in graph:
-        dist2[v] = set()
-        for u in graph[v]:
-            for w in graph[u]:
-                if w != v and w not in dist1[v]:
-                    dist2[v].add(w)
+def _neighbors_at_distance_2_fast(graph: nx.Graph, dist1):
+    # dist2[v] = (união dos N(u) para u em N(v)) - N(v) - {v}
+    dist2 = {}
+    for v in graph.nodes():
+        Nv = dist1[v]
+        s = set()
+        for u in Nv:
+            s |= dist1[u]
+        s.discard(v)
+        s -= Nv
+        dist2[v] = s
     return dist2
+
 
 def check_L21(G, f):
     # dist1
@@ -47,6 +51,7 @@ def check_L21(G, f):
                         return False
     return True
 
+
 def greedy_labeling(graph, order, ub=None):
     f = {i: -1 for i in order}
 
@@ -54,7 +59,7 @@ def greedy_labeling(graph, order, ub=None):
         delta = max(dict(graph.degree()).values(), default=0)
         ub = delta * delta + delta
 
-    possible_labeling = list(range(0, ub + 1))
+    possible = list(range(0, ub + 1))
 
     k = 0
     for i in order:
@@ -66,24 +71,21 @@ def greedy_labeling(graph, order, ub=None):
                 forbidden.add(ln)
                 forbidden.add(ln - 1)
                 forbidden.add(ln + 1)
-
             for nn in graph.neighbors(neighbor):
                 lnn = f[nn]
                 if lnn != -1:
                     forbidden.add(lnn)
 
-        # acha o menor rótulo permitido
         chosen = None
-        for x in possible_labeling:
+        for x in possible:
             if x not in forbidden:
                 chosen = x
                 break
 
         if chosen is None:
-            # fallback: expande e tenta de novo (raro)
-            start = possible_labeling[-1] + 1
-            end = start + 100
-            possible_labeling.extend(range(start, end + 1))
+            start = possible[-1] + 1
+            end = start + 200
+            possible.extend(range(start, end + 1))
             for x in range(start, end + 1):
                 if x not in forbidden:
                     chosen = x
@@ -96,6 +98,7 @@ def greedy_labeling(graph, order, ub=None):
         k = max(k, chosen)
 
     return k, f
+
 
 def processar_arquivo(arquivo_path: Path):
     arquivo_path = Path(arquivo_path)
@@ -112,38 +115,29 @@ def processar_arquivo(arquivo_path: Path):
     max_degree = max(dict(G.degree()).values(), default=0)
     min_degree = min(dict(G.degree()).values(), default=0)
 
-    # --- Greedy para solução inicial (MIP start) ---
+    # --- Greedy ---
     order = sorted(G.nodes(), key=lambda v: G.degree(v), reverse=True)
-
-    ub_greedy = max_degree**2 + max_degree  # coerente com seu bound
+    ub_greedy = max_degree**2 + max_degree
 
     t0 = time.time()
     k0, f0 = greedy_labeling(G, order, ub=ub_greedy)
-    ok = check_L21(G, f0)
-    if not ok:
-        print(f"[WARN] start greedy inválido em {arquivo_path.stem} (não respeita L(2,1))")
-    print("greedy:", time.time() - t0)
+    greedy_time = time.time() - t0
 
+    ok = check_L21(G, f0)
+    print(f"greedy: {greedy_time:.2f}s | k0={k0} | ok={ok}")
+
+    # --- dist1/dist2 ---
     t0 = time.time()
     dist1 = _neighbors_at_distance_1(G)
-    dist2 = _neighbors_at_distance_2(G, dist1)
-    print("dist2:", time.time() - t0)
+    dist2 = _neighbors_at_distance_2_fast(G, dist1)
+    dist_time = time.time() - t0
+    print(f"dist2: {dist_time:.2f}s")
 
-    # --- Modelo DOcplex ---
+    # --- Modelo ---
     mdl = Model(name=f"L21_{arquivo_path.stem}")
 
-    # variáveis
     x = mdl.integer_var_list(vertex_count, lb=0, name="x")
     z = mdl.integer_var(lb=0, name="z")
-
-    # --- MIP start: setar valores iniciais ---
-    for i in range(vertex_count):
-        x[i].start = int(f0[i])
-
-    z.start = int(k0)
-
-    # Dá um upper bound inicial pro modelo
-    mdl.add_constraint(z <= int(k0), ctname="ub_from_greedy")
 
     # x[i] <= z
     for i in range(vertex_count):
@@ -153,64 +147,74 @@ def processar_arquivo(arquivo_path: Path):
     M = max_degree**2 + max_degree + 2
     L = max_degree**2 + max_degree + 1
 
-    # distância 1 (dif >= 2)
+    # distância 1
     b = {}
     for i in range(vertex_count):
         for j in dist1[i]:
             if i < j:
-                b[(i, j)] = mdl.binary_var(name=f"b_{i}_{j}")
-                mdl.add_constraint(x[i] - x[j] >= 2 - M * (1 - b[(i, j)]), ctname=f"d1a_{i}_{j}")
-                mdl.add_constraint(x[j] - x[i] >= 2 - M * b[(i, j)], ctname=f"d1b_{i}_{j}")
+                var = mdl.binary_var(name=f"b_{i}_{j}")
+                b[(i, j)] = var
+                mdl.add_constraint(x[i] - x[j] >= 2 - M * (1 - var), ctname=f"d1a_{i}_{j}")
+                mdl.add_constraint(x[j] - x[i] >= 2 - M * var, ctname=f"d1b_{i}_{j}")
 
-    # distância 2 (dif >= 1)
+    # distância 2
     d = {}
     for i in range(vertex_count):
         for j in dist2[i]:
             if i < j:
-                d[(i, j)] = mdl.binary_var(name=f"d_{i}_{j}")
-                mdl.add_constraint(x[i] - x[j] >= 1 - L * (1 - d[(i, j)]), ctname=f"d2a_{i}_{j}")
-                mdl.add_constraint(x[j] - x[i] >= 1 - L * d[(i, j)], ctname=f"d2b_{i}_{j}")
+                var = mdl.binary_var(name=f"d_{i}_{j}")
+                d[(i, j)] = var
+                mdl.add_constraint(x[i] - x[j] >= 1 - L * (1 - var), ctname=f"d2a_{i}_{j}")
+                mdl.add_constraint(x[j] - x[i] >= 1 - L * var, ctname=f"d2b_{i}_{j}")
 
-    # binárias da distância 1
-    for (i, j), var in b.items():
-        var.start = 1 if f0[i] >= f0[j] else 0
-
-    # binárias da distância 2
-    for (i, j), var in d.items():
-        var.start = 1 if f0[i] >= f0[j] else 0
-    
-    # objetivo
     mdl.minimize(z)
 
-    # time limit (segundos)
+    # time limit e log
     mdl.parameters.timelimit = TIME_LIMIT_MINUTES * 60
-
-    # (opcional) log do CPLEX no terminal
     mdl.parameters.mip.display = 2
 
-    start = time.time()
+    # --- Ajuste para grafos densos (achar incumbente) ---
+    mdl.parameters.emphasis.mip = 1
+    mdl.parameters.mip.strategy.heuristicfreq = 10
+
+    # --- MIP start "de verdade" ---
+    if ok:
+        s = mdl.new_solution()
+
+        # x e z
+        for i in range(vertex_count):
+            s.add_var_value(x[i], int(f0[i]))
+        s.add_var_value(z, int(k0))
+
+        # b e d coerentes com o ordering das labels
+        for (i, j), var in b.items():
+            s.add_var_value(var, 1 if f0[i] >= f0[j] else 0)
+        for (i, j), var in d.items():
+            s.add_var_value(var, 1 if f0[i] >= f0[j] else 0)
+
+        # IMPORTANTÍSSIMO: registra o MIP start no modelo
+        mdl.add_mip_start(s)
+        print("[INFO] MIP start adicionado via add_mip_start().")
+
+        # Só agora faz sentido colocar z <= k0 (porque o greedy é viável)
+        mdl.add_constraint(z <= int(k0), ctname="ub_from_greedy")
+    else:
+        print("[INFO] Greedy inválido -> sem MIP start e sem z<=k0.")
+
+    # --- solve ---
     t0 = time.time()
     sol = mdl.solve(log_output=True)
-    print("solve:", time.time() - t0)
+    solve_time = time.time() - t0
+    print(f"solve: {solve_time:.2f}s")
     print("status:", mdl.solve_details.status)
-    print("details:", mdl.solve_details)
-    print(mdl.solve_details.status)
 
-    elapsed_ms = (time.time() - start) * 1000.0
+    elapsed_ms = solve_time * 1000.0
 
     if sol is None:
-        # sem solução (infeasible/unknown/time limit sem incumbente)
-        return (vertex_count, edge_count, density, max_degree, min_degree, elapsed_ms, -1, "NO_SOLUTION")
+        return (vertex_count, edge_count, density, max_degree, min_degree, elapsed_ms, -1,
+                f"NO_SOLUTION ({mdl.solve_details.status})")
 
-    # status
-    # (DOcplex normalmente usa solve_status + details)
-    status_str = str(mdl.solve_details.status)
-    # marcar "OPTIMAL" vs "BEST FOUND"
-    if mdl.solve_details.status == "optimal":
-        label_status = "OPTIMAL"
-    else:
-        # pode ser feasible, time_limit, etc.
-        label_status = "BEST FOUND"
+    label_status = "OPTIMAL" if mdl.solve_details.status == "optimal" else f"BEST FOUND ({mdl.solve_details.status})"
 
     # salvar rotulação
     nome_csv = pasta_saida_rotulacao / f"{arquivo_path.stem}.csv"
@@ -224,29 +228,29 @@ def processar_arquivo(arquivo_path: Path):
     return (vertex_count, edge_count, density, max_degree, min_degree, elapsed_ms, lambda_val, label_status)
 
 
-# loop dos arquivos
-for arquivo in pasta_entrada.iterdir():
-    if arquivo.suffix == ".mtx":
-        try:
-            print(f"Processando {arquivo.name}")
-            resultado = processar_arquivo(arquivo)
+# loop com progresso
+arquivos_mtx = sorted([a for a in pasta_entrada.iterdir() if a.suffix == ".mtx"])
+for arquivo in tqdm(arquivos_mtx, desc="Processando grafos", unit="grafo"):
+    try:
+        print(f"\nProcessando {arquivo.name}")
+        resultado = processar_arquivo(arquivo)
 
-            nome_csv = pasta_saida / f"{arquivo.stem}.csv"
-            with open(nome_csv, "w", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow(["graph", "#vertices", "#edges", "density", "max_degree", "min_degree", "time(ms)", "lambda", "status"])
-                writer.writerow([
-                    arquivo.stem,
-                    resultado[0],
-                    resultado[1],
-                    f"{resultado[2]:.5f}",
-                    resultado[3],
-                    resultado[4],
-                    f"{resultado[5]:.2f}",
-                    resultado[6],
-                    resultado[7]
-                ])
+        nome_csv = pasta_saida / f"{arquivo.stem}.csv"
+        with open(nome_csv, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["graph", "#vertices", "#edges", "density", "max_degree", "min_degree", "time(ms)", "lambda", "status"])
+            writer.writerow([
+                arquivo.stem,
+                resultado[0],
+                resultado[1],
+                f"{resultado[2]:.5f}",
+                resultado[3],
+                resultado[4],
+                f"{resultado[5]:.2f}",
+                resultado[6],
+                resultado[7]
+            ])
 
-            print(f"[OK] {arquivo.name} → {nome_csv.name}")
-        except Exception as e:
-            print(f"Erro ao processar {arquivo.name}: {e}")
+        print(f"[OK] {arquivo.name} → {nome_csv.name}")
+    except Exception as e:
+        tqdm.write(f"[ERRO] {arquivo.name}: {e}")
