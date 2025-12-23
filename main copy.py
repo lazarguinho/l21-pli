@@ -31,6 +31,39 @@ def _neighbors_at_distance_2(graph: nx.Graph, dist1):
                     dist2[v].add(w)
     return dist2
 
+def greedy_labeling(graph, order, ub=None):
+    f = {i: -1 for i in order}
+    Pro = {}
+
+    if ub is None:
+        delta = max(dict(graph.degree()).values(), default=0)
+        ub = delta * delta + delta 
+
+    possible_labeling = list(range(0, ub + 1))
+
+    k = 0
+    for i in order:
+        Pro[i] = []
+        for neighbor in graph.neighbors(i):
+            if f[neighbor] != -1:
+                Pro[i].append(f[neighbor])
+                Pro[i].append(f[neighbor] - 1)
+                Pro[i].append(f[neighbor] + 1)
+            for nn in graph.neighbors(neighbor):
+                if f[nn] != -1:
+                    Pro[i].append(f[nn])
+
+        candidates = [x for x in possible_labeling if x not in Pro[i]]
+        if not candidates:
+            # fallback bem raro: expande o universo de rótulos
+            new_max = possible_labeling[-1] + 100
+            possible_labeling.extend(range(possible_labeling[-1] + 1, new_max + 1))
+            candidates = [x for x in possible_labeling if x not in Pro[i]]
+
+        f[i] = min(candidates)
+        k = max(k, f[i])
+
+    return k, f
 
 def processar_arquivo(arquivo_path: Path):
     arquivo_path = Path(arquivo_path)
@@ -47,6 +80,12 @@ def processar_arquivo(arquivo_path: Path):
     max_degree = max(dict(G.degree()).values(), default=0)
     min_degree = min(dict(G.degree()).values(), default=0)
 
+    # --- Greedy para solução inicial (MIP start) ---
+    order = sorted(G.nodes(), key=lambda v: G.degree(v), reverse=True)
+
+    ub_greedy = max_degree**2 + max_degree  # coerente com seu bound
+    k0, f0 = greedy_labeling(G, order, ub=ub_greedy)
+
     dist1 = _neighbors_at_distance_1(G)
     dist2 = _neighbors_at_distance_2(G, dist1)
 
@@ -56,6 +95,15 @@ def processar_arquivo(arquivo_path: Path):
     # variáveis
     x = mdl.integer_var_list(vertex_count, lb=0, name="x")
     z = mdl.integer_var(lb=0, name="z")
+
+    # --- MIP start: setar valores iniciais ---
+    for i in range(vertex_count):
+        x[i].start = int(f0[i])
+
+    z.start = int(k0)
+
+    # Dá um upper bound inicial pro modelo
+    mdl.add_constraint(z <= int(k0), ctname="ub_from_greedy")
 
     # x[i] <= z
     for i in range(vertex_count):

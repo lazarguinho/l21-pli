@@ -1,0 +1,2 @@
+graph,#vertices,#edges,density,max_degree,min_degree,time(ms),lambda,status
+erdos_n533_p0.8,533,113523,0.80071,453,399,4307.14,0,BEST FOUND

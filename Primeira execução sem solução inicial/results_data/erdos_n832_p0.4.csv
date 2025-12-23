@@ -1,0 +1,2 @@
+graph,#vertices,#edges,density,max_degree,min_degree,time(ms),lambda,status
+erdos_n832_p0.4,832,137589,0.39801,375,287,901979.32,-1,NO_SOLUTION
