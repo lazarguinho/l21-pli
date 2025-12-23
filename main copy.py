@@ -32,6 +32,21 @@ def _neighbors_at_distance_2(graph: nx.Graph, dist1):
                     dist2[v].add(w)
     return dist2
 
+def check_L21(G, f):
+    # dist1
+    for u, v in G.edges():
+        if abs(f[u] - f[v]) < 2:
+            return False
+    # dist2
+    for u in G.nodes():
+        Nu = set(G.neighbors(u))
+        for w in Nu:
+            for v in G.neighbors(w):
+                if v != u and v not in Nu:
+                    if abs(f[u] - f[v]) < 1:
+                        return False
+    return True
+
 def greedy_labeling(graph, order, ub=None):
     f = {i: -1 for i in order}
 
@@ -104,6 +119,9 @@ def processar_arquivo(arquivo_path: Path):
 
     t0 = time.time()
     k0, f0 = greedy_labeling(G, order, ub=ub_greedy)
+    ok = check_L21(G, f0)
+    if not ok:
+        print(f"[WARN] start greedy inválido em {arquivo_path.stem} (não respeita L(2,1))")
     print("greedy:", time.time() - t0)
 
     t0 = time.time()
@@ -153,6 +171,14 @@ def processar_arquivo(arquivo_path: Path):
                 mdl.add_constraint(x[i] - x[j] >= 1 - L * (1 - d[(i, j)]), ctname=f"d2a_{i}_{j}")
                 mdl.add_constraint(x[j] - x[i] >= 1 - L * d[(i, j)], ctname=f"d2b_{i}_{j}")
 
+    # binárias da distância 1
+    for (i, j), var in b.items():
+        var.start = 1 if f0[i] >= f0[j] else 0
+
+    # binárias da distância 2
+    for (i, j), var in d.items():
+        var.start = 1 if f0[i] >= f0[j] else 0
+    
     # objetivo
     mdl.minimize(z)
 
@@ -164,8 +190,12 @@ def processar_arquivo(arquivo_path: Path):
 
     start = time.time()
     t0 = time.time()
-    sol = mdl.solve(log_output=False)
+    sol = mdl.solve(log_output=True)
     print("solve:", time.time() - t0)
+    print("status:", mdl.solve_details.status)
+    print("details:", mdl.solve_details)
+    print(mdl.solve_details.status)
+
     elapsed_ms = (time.time() - start) * 1000.0
 
     if sol is None:

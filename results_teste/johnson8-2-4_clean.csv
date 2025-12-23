@@ -1,2 +1,2 @@
 graph,#vertices,#edges,density,max_degree,min_degree,time(ms),lambda,status
-erdos_n360_p0.8,360,51754,0.80090,307,270,900708.46,-1,NO_SOLUTION
+johnson8-2-4_clean,28,210,0.55556,15,15,105.28,27.0,BEST FOUND
