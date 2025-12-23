@@ -4,6 +4,7 @@ from scipy.io import mmread
 from pathlib import Path
 import csv
 import time
+from tqdm import tqdm
 
 input_directory_name = "data"
 pasta_entrada = Path(input_directory_name)
@@ -33,35 +34,51 @@ def _neighbors_at_distance_2(graph: nx.Graph, dist1):
 
 def greedy_labeling(graph, order, ub=None):
     f = {i: -1 for i in order}
-    Pro = {}
 
     if ub is None:
         delta = max(dict(graph.degree()).values(), default=0)
-        ub = delta * delta + delta 
+        ub = delta * delta + delta
 
     possible_labeling = list(range(0, ub + 1))
 
     k = 0
     for i in order:
-        Pro[i] = []
+        forbidden = set()
+
         for neighbor in graph.neighbors(i):
-            if f[neighbor] != -1:
-                Pro[i].append(f[neighbor])
-                Pro[i].append(f[neighbor] - 1)
-                Pro[i].append(f[neighbor] + 1)
+            ln = f[neighbor]
+            if ln != -1:
+                forbidden.add(ln)
+                forbidden.add(ln - 1)
+                forbidden.add(ln + 1)
+
             for nn in graph.neighbors(neighbor):
-                if f[nn] != -1:
-                    Pro[i].append(f[nn])
+                lnn = f[nn]
+                if lnn != -1:
+                    forbidden.add(lnn)
 
-        candidates = [x for x in possible_labeling if x not in Pro[i]]
-        if not candidates:
-            # fallback bem raro: expande o universo de rótulos
-            new_max = possible_labeling[-1] + 100
-            possible_labeling.extend(range(possible_labeling[-1] + 1, new_max + 1))
-            candidates = [x for x in possible_labeling if x not in Pro[i]]
+        # acha o menor rótulo permitido
+        chosen = None
+        for x in possible_labeling:
+            if x not in forbidden:
+                chosen = x
+                break
 
-        f[i] = min(candidates)
-        k = max(k, f[i])
+        if chosen is None:
+            # fallback: expande e tenta de novo (raro)
+            start = possible_labeling[-1] + 1
+            end = start + 100
+            possible_labeling.extend(range(start, end + 1))
+            for x in range(start, end + 1):
+                if x not in forbidden:
+                    chosen = x
+                    break
+
+        if chosen is None:
+            raise RuntimeError("Greedy não encontrou rótulo mesmo após expandir.")
+
+        f[i] = chosen
+        k = max(k, chosen)
 
     return k, f
 
@@ -84,10 +101,15 @@ def processar_arquivo(arquivo_path: Path):
     order = sorted(G.nodes(), key=lambda v: G.degree(v), reverse=True)
 
     ub_greedy = max_degree**2 + max_degree  # coerente com seu bound
-    k0, f0 = greedy_labeling(G, order, ub=ub_greedy)
 
+    t0 = time.time()
+    k0, f0 = greedy_labeling(G, order, ub=ub_greedy)
+    print("greedy:", time.time() - t0)
+
+    t0 = time.time()
     dist1 = _neighbors_at_distance_1(G)
     dist2 = _neighbors_at_distance_2(G, dist1)
+    print("dist2:", time.time() - t0)
 
     # --- Modelo DOcplex ---
     mdl = Model(name=f"L21_{arquivo_path.stem}")
@@ -141,7 +163,9 @@ def processar_arquivo(arquivo_path: Path):
     mdl.parameters.mip.display = 2
 
     start = time.time()
+    t0 = time.time()
     sol = mdl.solve(log_output=False)
+    print("solve:", time.time() - t0)
     elapsed_ms = (time.time() - start) * 1000.0
 
     if sol is None:
