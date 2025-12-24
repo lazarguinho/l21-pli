@@ -1,0 +1,2 @@
+graph,#vertices,#edges,density,max_degree,min_degree,time(ms),lambda,status
+erdos_n138_p0.4,138,3803,0.40231,69,42,44276.93,137.0,BEST FOUND (integer optimal solution)

@@ -1,0 +1,2 @@
+graph,#vertices,#edges,density,max_degree,min_degree,time(ms),lambda,status
+erdos_n713_p0.2,713,50739,0.19990,181,105,902640.45,712.0,BEST FOUND (time limit exceeded)
